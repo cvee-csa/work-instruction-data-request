@@ -12,3 +12,5 @@ Work instructions (SOPs) for recurring IT Ops / Zendesk ticket types.
   Sample tickets: **#122913** (confirmed genuinely zero leads that day) and **#155788** (leads existed but the export job hadn't run).
 - **csa-public-slack-invite-rotation.md** — How to rotate the public Slack invite link for the csa-public workspace and update the csaurl.org/csa-public-slack redirect, roughly every 2 weeks or before the current link's 30-day expiry.
   No specific ticket on file — this one runs on a recurring schedule rather than in response to a request.
+- **SOP_CSA_Staff_Page_Rippling_Verification.md** — How to cross-reference the public CSA Staff page (`/about/csa-staff`) against Rippling's People directory to confirm everyone listed is actually a current employee, and how to classify employment-status vs. title-only discrepancies. Browser-based (no Grafana/SQL) — steps are all navigating the CSA website and the Rippling web app.
+  Sample run: **2026-08-06** (47 public staff names checked; found 6 employment-status discrepancies — 5 terminated, 1 never onboarded — and 4 title-only mismatches).
