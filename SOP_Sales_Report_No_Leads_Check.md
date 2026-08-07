@@ -11,6 +11,8 @@
 
 **✅ Validated:** Dry-run against ticket #122913 ("Sales report 06-10-2025"), where the query returned zero matching rows — confirming there genuinely were no leads that day. Re-run against ticket #155788 ("Sales report 08/06/2026") using the identical filter pattern returned 5 rows — meaning the "no leads" theory was wrong; there was unexported lead data sitting in the table, pointing to the export/report job itself not having run. Both outcomes are valid and mean different things — see Step 3.
 
+**⚠️ Correction from ticket #155788:** the full-record pull in the original version of this SOP (Step 4) was missing three fields the Sales team actually needs on every report — `region`, `organization_department`, and `job_level`. The requester caught this because the CSV we sent back didn't match the fuller export they're used to receiving before it's cleaned up for Sales. Step 4 below has been corrected to include them; if you pulled records using an older copy of this SOP, redo the pull with the corrected column list before sending.
+
 ---
 
 ## Step 1 — Open Grafana Explore
@@ -49,7 +51,7 @@ WHERE opt_in_marketing_internal = true
 
 Only pull full records if the requester specifically needs the underlying data (e.g. to confirm which leads were affected), not by default.
 
-1. Remove the `COUNT` data operation and add plain columns instead: `id`, `name_given`, `name_family`, `email`, `organization_name`, `organization_title`, `created_at`.
+1. Remove the `COUNT` data operation and add plain columns instead: `id`, `name_given`, `name_family`, `email`, `organization_name`, `organization_title`, `organization_department`, `job_level`, `region`, `created_at`. **The three fields in bold below are the ones flagged as missing in ticket #155788 — don't drop them:** **`organization_department`**, **`job_level`**, **`region`**. These are the same field names shown in the pre-cleanup export the Sales team already receives, so the report we send back should match it.
 2. Keep the same three filters from Step 2.
 3. Run once.
 4. **This is PII.** Export to CSV and attach as a **private** ticket comment only — same rule as `SOP_ThirdParty_OptIn_Leads.md` Step 4. Do not post publicly or email outside the ticket. Name the file descriptively, e.g. `Ticket{#}_Unexported-Sales-Leads_{date}.csv`.
@@ -57,6 +59,7 @@ Only pull full records if the requester specifically needs the underlying data (
 ## Step 5 — Sanity-check and report
 
 - State clearly which of the two outcomes in Step 3 applies, and don't conflate "nothing is lost" with "nothing is wrong" — a job failure is worth flagging even though the data itself is safe.
+- Before sending, confirm the CSV actually has `organization_department`, `job_level`, and `region` populated (not just present as empty columns) — ticket #155788 was reopened specifically because an earlier pull had these fields missing entirely, not just blank.
 - **Timezone display note:** the `created_at` values shown in Grafana's Explore table may render a few hours earlier than the filter boundary you entered (e.g. filtering `>= 2026-08-06 00:00:00` can show result rows timestamped late on 2026-08-05). This has been observed to be a display/timezone rendering quirk, not a filter error — the row count matches independently-run COUNT-only queries using the same filter. Don't take the displayed date at face value as evidence the filter is wrong; if in doubt, re-run the COUNT-only version of the query to cross-check the row count.
 
 ---
@@ -78,7 +81,9 @@ WHERE opt_in_marketing_internal = true
   AND created_at >= '{start of report window}';
 
 -- Full record pull (PII — private ticket attachment only)
-SELECT id, name_given, name_family, email, organization_name, organization_title, created_at
+-- Corrected per ticket #155788: added organization_department, job_level, region
+SELECT id, name_given, name_family, email, organization_name, organization_title,
+       organization_department, job_level, region, created_at
 FROM personal_data_submissions
 WHERE opt_in_marketing_internal = true
   AND exported_for_sales_at IS NULL
