@@ -12,6 +12,10 @@
 
 **✅ Second validation (anomalous-count case):** Re-run against the "Hugging Face Incident Initial Post-Mortem" (CMS ID 2572) on 2026-07-30 to answer "how many downloads today?" The count had jumped from 26,669 (2026-07-29) to 33,199 — a 24% one-day increase, unusually large for a 3-day-old document. Re-running the identical query twice on separate clean (non-blocked) sessions returned 33,173 and then 33,199 minutes apart — small, consistent, incremental growth, confirming the number was real and not a query fluke. A follow-up sanity check (see Step 5 below) confirmed the growth was organic, not bot traffic. Lesson: a big or surprising number is not, by itself, a reason to distrust the query — but it is a reason to run Step 5.
 
+**✅ Third validation (per-format breakdown + WAF workaround):** Run against "AI Controls Matrix v1.1" (CMS ID 2325, created 06/18/2026) for Zendesk #160085, where the requester wanted Total / Publication / Presentation download counts. All-time result: **6,462 total = 4,135 main asset (`artifact_download_format = artifact`, AICM v1.1.zip) + 2,327 presentation (`artifact_download_format = presentation`, AICM v1.1 Presentation.pptx.pdf)**, plus 3 `Artifact` / `action = RailsAdmin` rows that are internal admin noise and were excluded. Confirmed by two independent clean runs in separate tabs (Oct 2026). Along the way the "Is empty" filter was blocked by the WAF — see "Alternative query" under Step 3 and the third trigger in the WAF section.
+
+**Note — the "Business Activity" Grafana dashboard (`/d/business/business-activity`) cannot answer per-publication questions.** Its "Downloads Over Time (interactions)" panel is a site-wide `COUNT(*)` over the whole `interactions` table with no publication filter. Skip it and go straight to CSA Admin + Explore.
+
 ---
 
 ## Step 1 — Find the publication's CMS ID
@@ -22,6 +26,7 @@ Downloads are tracked against a CMS record ID, not the public URL slug, so this 
 2. Type the publication name into the **Filter** text box near the top of the list and click **Refresh** — this reliably narrows the list to matching titles (confirmed working; faster than scrolling the full list).
 3. Open the record. The CMS ID is in the edit URL: `/csa-admin/publication/{ID}/edit`.
 4. Note the **Status** and **Created** date while you're there — useful context if the download number looks unusual (e.g., a just-published document with a huge count is worth a sanity check).
+5. Note which files are attached on the edit page (e.g., the **Asset** and **Presentation** fields). If the requester wants a per-file breakdown, these correspond to `artifact_download_format` values (see "Per-format breakdown" under Step 3).
 
 Do **not** try to find the publication in the `articles` Postgres table — that table only holds Press Releases and Blog posts, not Publications/Artifacts/Whitepapers.
 
@@ -48,6 +53,16 @@ Do this entirely with point-and-click controls. Do not type raw SQL into the Cod
 7. Click **Run Query** once.
 
 Expected result: a small table with one row per `interactable_type`, each with a `count`. **Do not assume only one type will appear** — in testing, one publication returned a single `Publication` row while another returned both `Artifact` and `Publication` rows that needed to be added together for the true total. Always sum every row returned.
+
+**Time range:** the Builder query has no `$__timeFilter`, so the Explore time picker does not constrain the result — every run is all-time regardless of the range shown. No need to set absolute dates (and an absolute 2020-01-01→now range was not the cause of any WAF block).
+
+### Per-format breakdown (when the requester wants publication vs. presentation counts)
+
+The `interactions` table has an `artifact_download_format` column. Add it as a plain select column and as a Group by column (Group by `interactable_type`, then `artifact_download_format`) with only the `interactable_id == {CMS ID}` filter. Observed values for a publication with both files attached: `artifact` (main asset, e.g. the .zip) and `presentation`. The per-format counts should sum to the same total as the standard query. Report per-format and total counts in the reply.
+
+### Alternative query if "Is empty" gets WAF-blocked
+
+The `controller Is empty` / `action Is empty` filters generate `COALESCE(controller, '') = ''` in SQL, which was blocked by the Cloudflare WAF on every attempt in Oct 2026 (even though it worked in July). If you hit that, do **not** keep retrying it. Instead, drop those two filters and keep only `interactable_id == {CMS ID}`, but add `controller` and `action` as plain select columns and Group by columns alongside `interactable_type`. Then exclude noise rows by hand: rows with `action = RailsAdmin` (internal edit-log activity) are not downloads; rows with empty `controller`/`action` are. For CMS ID 2325 this showed `controller` empty on every row, 6,462 `Publication` rows with empty `action`, and 3 `Artifact` rows with `action = RailsAdmin`. Do not exclude `Artifact` rows wholesale — for some publications (e.g., DRaaS, CMS ID 624) `Artifact` rows are genuine downloads; judge by `action`/`controller`, not by type.
 
 ## Step 4 — Sanity-check and report
 
@@ -84,10 +99,14 @@ Only report the number once both checks pass, or once you've explicitly noted th
 
 ## ⚠️ Known issue: Cloudflare WAF blocks
 
-The ops-dashboard domain sits behind Cloudflare, and its WAF will intermittently block requests tied to this workflow. Two triggers have been confirmed:
+The ops-dashboard domain sits behind Cloudflare, and its WAF will intermittently block requests tied to this workflow. Three triggers have been confirmed:
 
 1. **Navigating directly to a URL with raw SQL in the query string** (e.g., pasting a full Explore URL with `rawSql=...` into the address bar, or using the Code editor and running it). This reliably triggers a hard block ("Sorry, you have been blocked").
 2. **Running several queries back-to-back in quick succession**, even through the Builder UI. This has triggered blocks even when the query itself was clean and had run successfully moments before — it appears to be a rate/session-based trigger, not purely content-based. In practice, even *one* extra run after a successful query — for example, re-running the same query a few minutes later to double-check a number — is enough to trigger it. Treat every re-run as its own attempt requiring the full avoid/recover cycle below, not as a quick follow-up.
+
+3. **The "Is empty" filter operator (Oct 2026, AICM v1.1).** Building the standard query with `controller Is empty` / `action Is empty` (SQL: `COALESCE(x, '') = ''`) produced the explicit "Sorry, you have been blocked" page on every run — with an absolute 2020-01-01→now range *and* with a relative `now-2y` range, so the time range is not the cause. The same query with only `interactable_id == N` plus plain select/group-by columns ran cleanly, including repeated runs across several column edits in the same session (which also weakens trigger #2 as the sole explanation). Use the "Alternative query" under Step 3. Because the July validations used these filters successfully, the WAF rules may have changed or be session-dependent — treat this as empirical, not guaranteed.
+
+**Builder-mode UI quirks (observed Oct 2026):** adding a COUNT aggregation auto-enables the **Group** toggle (harmless when grouping); the Filter **+** button often needs a second click before the filter row appears; the operator dropdown's "Is empty / Is not empty / Is null / Is not null / Any in" options sit at the bottom and require scrolling the list; for Group by, pick the plain column name, not the "Selected columns" entry (e.g., "3 - artifact_download_format") shown above it; allow ~2 seconds after the Explore page loads before clicking the Table dropdown.
 
 **⚠️ Silent-block trap:** A block does not always show an obvious error. Sometimes Explore just renders **"No data"** in the results panel with no visible warning, indistinguishable at a glance from a real empty result. If a count comes back as "No data" or zero when you expected real numbers, don't take it at face value — open **Query inspector → Refresh** (or the **Error** tab if one appears) and check whether the response is actually a Cloudflare "Attention Required" HTML page rather than a real query result. If so, treat it as a block, not as a genuine finding, and go through the recovery steps below.
 
